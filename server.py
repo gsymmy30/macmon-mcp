@@ -38,6 +38,52 @@ def format_uptime(boot_time):
     else:
         return f"{minutes}m"
 
+def check_system_alerts():
+    """Check system metrics and return alerts if thresholds are exceeded."""
+    alerts = []
+    
+    # Check CPU
+    cpu_percent = psutil.cpu_percent(interval=1)
+    if cpu_percent > 80:
+        alerts.append({
+            'level': 'high' if cpu_percent > 90 else 'medium',
+            'type': 'CPU',
+            'message': f'CPU usage is {cpu_percent}%',
+            'value': cpu_percent
+        })
+    
+    # Check Memory
+    memory = psutil.virtual_memory()
+    if memory.percent > 85:
+        alerts.append({
+            'level': 'high' if memory.percent > 95 else 'medium',
+            'type': 'Memory',
+            'message': f'Memory usage is {memory.percent}%',
+            'value': memory.percent
+        })
+    
+    # Check Disk
+    disk = psutil.disk_usage('/')
+    if disk.percent > 90:
+        alerts.append({
+            'level': 'high' if disk.percent > 95 else 'medium',
+            'type': 'Disk',
+            'message': f'Disk usage is {disk.percent}%',
+            'value': disk.percent
+        })
+    
+    # Check Swap (if it's being used heavily)
+    swap = psutil.swap_memory()
+    if swap.percent > 75:
+        alerts.append({
+            'level': 'medium',
+            'type': 'Swap',
+            'message': f'Swap usage is {swap.percent}%',
+            'value': swap.percent
+        })
+    
+    return alerts
+
 def get_system_status():
     """Get system status."""
     cpu_percent = psutil.cpu_percent(interval=1)
@@ -92,8 +138,8 @@ def get_top_processes(limit=10, sort_by='cpu'):
             # Get values with defaults for None
             pid = pinfo.get('pid', 0)
             name = pinfo.get('name', 'Unknown')
-            cpu_percent = pinfo.get('cpu_percent') or 0.0  # Default to 0 if None
-            memory_percent = pinfo.get('memory_percent') or 0.0  # Default to 0 if None
+            cpu_percent = pinfo.get('cpu_percent') or 0.0
+            memory_percent = pinfo.get('memory_percent') or 0.0
             
             # Get memory in MB
             memory_mb = 0
@@ -103,17 +149,16 @@ def get_top_processes(limit=10, sort_by='cpu'):
             processes.append({
                 'pid': pid,
                 'name': name,
-                'cpu_percent': float(cpu_percent),  # Ensure it's a float
-                'memory_percent': float(memory_percent),  # Ensure it's a float
+                'cpu_percent': float(cpu_percent),
+                'memory_percent': float(memory_percent),
                 'memory_mb': memory_mb
             })
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
         except Exception as e:
-            # Skip any process that causes issues
             continue
     
-    # Sort by the specified metric with None-safe comparison
+    # Sort by the specified metric
     if sort_by == 'memory':
         processes.sort(key=lambda x: x.get('memory_percent', 0), reverse=True)
     else:
@@ -242,6 +287,15 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": [],
             },
         ),
+        types.Tool(
+            name="check_alerts",
+            description="Check system metrics and report any alerts for high resource usage",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
     ]
 
 @server.call_tool()
@@ -268,6 +322,20 @@ async def handle_call_tool(
         result = get_cpu_details()
         return [types.TextContent(type="text", text=result)]
     
+    elif name == "check_alerts":
+        alerts = check_system_alerts()
+        
+        if not alerts:
+            return [types.TextContent(type="text", text="✅ All systems normal - no alerts")]
+        
+        # Format alert response
+        response = "⚠️ **System Alerts**\n\n"
+        for alert in alerts:
+            emoji = "🔴" if alert['level'] == 'high' else "🟡"
+            response += f"{emoji} **{alert['type']}**: {alert['message']}\n"
+        
+        return [types.TextContent(type="text", text=response)]
+    
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -288,11 +356,23 @@ async def main():
             print(get_network_stats())
         except Exception as e:
             print(f"Error getting network stats: {e}")
+        print("\n4. CPU Details:")
+        try:
+            print(get_cpu_details())
+        except Exception as e:
+            print(f"Error getting CPU details: {e}")
+        print("\n5. Checking Alerts:")
+        alerts = check_system_alerts()
+        if alerts:
+            for alert in alerts:
+                print(f"- {alert['type']}: {alert['message']}")
+        else:
+            print("No alerts")
         print("\n✅ MacMon testing complete!")
         return
     
     # Normal MCP server mode
-    print("Starting MacMon MCP Server v0.2.2...", file=sys.stderr)
+    print("Starting MacMon MCP Server v0.2.3...", file=sys.stderr)
     
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
@@ -300,7 +380,7 @@ async def main():
             write_stream,
             InitializationOptions(
                 server_name="macmon",
-                server_version="0.2.2",
+                server_version="0.2.3",
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
